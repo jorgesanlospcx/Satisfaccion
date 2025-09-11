@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Encuesta de Satisfacción</title>
+<style>
+  :root { --maxw: 720px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  body { margin: 0; background: #f7f7f7; color: #111; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 20px; }
+  .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 6px 18px rgba(0,0,0,.06); }
+  h1 { font-size: 1.2rem; margin: 0 0 8px; font-weight: 700; text-align: center; }
+  .muted { color: #666; font-size: .95rem; text-align: center; margin-bottom: 18px; }
+  .question { font-size: 1.25rem; line-height: 1.4; margin: 14px 0 24px; text-align: center; }
+  .scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .btn { font-size: 1.25rem; padding: 18px 0; border: 1px solid #ddd; border-radius: 10px; background: #fafafa; cursor: pointer; }
+  .btn:active { transform: scale(0.98); }
+  .btn[disabled] { opacity: .5; pointer-events: none; }
+  .legend { display: flex; justify-content: space-between; font-size: .95rem; color: #555; margin-top: 10px; }
+  .actions { display: flex; gap: 10px; margin-top: 18px; justify-content: center; }
+  .small { font-size: .95rem; padding: 10px 14px; border-radius: 8px; border: 1px solid #ddd; background: #fff; }
+  .ok { color: #0a8f3c; text-align: center; font-weight: 600; margin-top: 16px; }
+  .warn { color: #b15c00; text-align: center; font-weight: 600; margin-top: 16px; }
+  .err { color: #b00020; text-align: center; font-weight: 600; margin-top: 16px; }
+  footer { text-align: center; font-size: .85rem; color: #888; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Encuesta de Satisfacción</h1>
+    <div class="muted">Responde una sola pregunta. Toma menos de 10 segundos.</div>
+    <div id="question" class="question">Cargando pregunta…</div>
+
+    <div class="scale" id="scale">
+      <!-- Botones 1–5 -->
+    </div>
+    <div class="legend">
+      <span>1 = Muy insatisfecho</span>
+      <span>5 = Muy satisfecho</span>
+    </div>
+
+    <div class="actions">
+      <button id="newQ" class="small" type="button">↻ Otra pregunta</button>
+      <button id="resetSession" class="small" type="button" title="Nuevo paciente">Nuevo paciente</button>
+    </div>
+
+    <div id="msg"></div>
+    <footer>Gracias por tu respuesta</footer>
+  </div>
+</div>
+
+<script>
+// === CONFIG ===
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbxgKIlB0nYlCerr2AZ4zbQHO86w4UwpD7WLJGIXLLIhKC4t3J3imiW-pHm_kVp9D-ybzQ/exec';
+
+// Pool (asegúrate de no dejar comas finales)
+const QUESTION_POOL = [
+  { id: 'q01', text: '¿Qué tan satisfecho(a) estás con la atención recibida en tu sesión de hoy?' },
+  { id: 'q02', text: '¿Qué tan satisfecho(a) estás con la claridad con la que tu terapeuta explicó los temas tratados?' },
+  { id: 'q03', text: '¿Qué tan satisfecho(a) estás con la escucha y comprensión mostrada por tu terapeuta?' },
+  { id: 'q04', text: '¿Qué tan satisfecho(a) estás con el profesionalismo de tu terapeuta?' },
+  { id: 'q05', text: '¿Qué tan satisfecho(a) estás con la confianza y seguridad que te transmitió tu terapeuta?' },
+  { id: 'q06', text: '¿Qué tan satisfecho(a) estás con la preparación y competencias que percibiste en tu terapeuta?' },
+  { id: 'q07', text: '¿Qué tan satisfecho(a) estás con el tiempo de espera antes de tu sesión?' },
+  { id: 'q08', text: '¿Qué tan satisfecho(a) estás con la facilidad para agendar o confirmar tu cita?' },
+  { id: 'q09', text: '¿Qué tan satisfecho(a) estás con la amabilidad del personal de recepción y apoyo?' },
+  { id: 'q10', text: '¿Qué tan satisfecho(a) estás con la comodidad y adecuación de las instalaciones?' },
+  { id: 'q11', text: '¿Qué tan satisfecho(a) estás con la limpieza y el orden de las instalaciones?' },
+  { id: 'q12', text: '¿Qué tan satisfecho(a) estás con el ambiente general de la sala de espera y consultorios?' },
+  { id: 'q13', text: '¿Qué tan satisfecho(a) estás con el aporte de la sesión a tu bienestar personal?' },
+  { id: 'q14', text: '¿Qué tan satisfecho(a) estás con tu motivación para continuar con tu proceso terapéutico en PCX?' },
+  { id: 'q15', text: '¿Qué tan satisfecho(a) estás con la posibilidad de recomendar PCX a familiares o amigos?' },
+  { id: 'q16', text: '¿Qué tan satisfecho(a) estás con el uso de recursos digitales (recordatorios, materiales, etc.) en tu proceso?' },
+  { id: 'q17', text: '¿Qué tan satisfecho(a) estás con la percepción de PCX como un centro actualizado y profesional?' },
+  { id: 'q18', text: '¿Qué tan satisfecho(a) estás con la diferenciación de PCX frente a otras opciones en la ciudad?' }
+];
+
+// === Utilidades seguras ===
+const $ = sel => document.querySelector(sel);
+
+// UUID con fallback (por si crypto no existe)
+function uuid() {
+  try {
+    if (window.crypto && crypto.getRandomValues) {
+      return 'xxxxxxxxxxxx'.replace(/x/g, () =>
+        (crypto.getRandomValues(new Uint8Array(1))[0] & 15).toString(16)
+      );
+    }
+  } catch (e) {}
+  // Fallback simple
+  return 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+function getSessionId() {
+  let s = localStorage.getItem('session_id');
+  if (!s) { s = uuid(); localStorage.setItem('session_id', s); }
+  return s;
+}
+function setNewSession() { localStorage.setItem('session_id', uuid()); }
+
+// Cola offline
+function getQueue() {
+  try { return JSON.parse(localStorage.getItem('pending_submissions') || '[]'); }
+  catch { return []; }
+}
+function setQueue(arr) { localStorage.setItem('pending_submissions', JSON.stringify(arr)); }
+async function flushQueue() {
+  const q = getQueue();
+  if (!q.length) return;
+  let kept = [];
+  for (const payload of q) {
+    const ok = await sendToGAS(payload, true);
+    if (!ok) kept.push(payload);
+  }
+  setQueue(kept);
+  if (q.length && !kept.length) showMsg('Se enviaron respuestas pendientes.', 'ok');
+}
+window.addEventListener('online', flushQueue);
+
+// Lógica de preguntas
+function pickRandomQuestion() {
+  if (!Array.isArray(QUESTION_POOL) || QUESTION_POOL.length === 0) {
+    throw new Error('QUESTION_POOL vacío o no definido');
+  }
+  const idx = Math.floor(Math.random() * QUESTION_POOL.length);
+  return QUESTION_POOL[idx];
+}
+
+let currentQ = null;
+
+function renderQuestion() {
+  try {
+    currentQ = pickRandomQuestion();
+    const qEl = $('#question');
+    if (!qEl) throw new Error('No se encontró el elemento #question');
+
+    qEl.textContent = currentQ.text;
+
+    const scale = $('#scale');
+    if (!scale) throw new Error('No se encontró el elemento #scale');
+
+    scale.innerHTML = '';
+    for (let i = 1; i <= 5; i++) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.type = 'button';
+      btn.textContent = i;
+      btn.setAttribute('aria-label', `Elegir ${i}`);
+      btn.addEventListener('click', () => submitRating(i));
+      scale.appendChild(btn);
+    }
+    showMsg(''); // limpia mensajes
+  } catch (e) {
+    console.error(e);
+    showMsg('Error al cargar la pregunta: ' + e.message, 'err');
+  }
+}
+
+function disableScale(disabled = true) {
+  const scale = $('#scale');
+  if (!scale) return;
+  scale.querySelectorAll('button').forEach(b => b.disabled = disabled);
+}
+
+function showMsg(text, cls='ok') {
+  const el = $('#msg');
+  if (!el) return;
+  el.className = cls;
+  el.textContent = text || '';
+}
+
+// Envío al Apps Script
+async function sendToGAS(data, silent = false) {
+  try {
+    const body = new URLSearchParams();
+    body.append('payload', JSON.stringify(data));
+    const res = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body
+    });
+    if (!silent) {
+      if (res.ok) showMsg('¡Gracias! Tu respuesta ha sido registrada.', 'ok');
+      else showMsg('Error de servidor al guardar. Se intentará más tarde.', 'warn');
+    }
+    return res.ok;
+  } catch (e) {
+    if (!silent) showMsg('Sin conexión. Tu respuesta se enviará al reconectar.', 'warn');
+    return false;
+  }
+}
+
+async function submitRating(rating) {
+  disableScale(true);
+  const payload = {
+    sessionId: getSessionId(),
+    questionId: currentQ?.id || '',
+    questionText: currentQ?.text || '',
+    rating: String(rating),
+    userAgent: navigator.userAgent || '',
+    deviceTime: new Date().toISOString()
+  };
+  const ok = await sendToGAS(payload);
+  if (!ok) {
+    const q = getQueue();
+    q.push(payload);
+    setQueue(q);
+  }
+  setTimeout(() => { renderQuestion(); disableScale(false); }, 1200);
+}
+
+// Eventos UI (se registran al cargar el DOM)
+document.addEventListener('DOMContentLoaded', () => {
+  const newQ = document.getElementById('newQ');
+  const reset = document.getElementById('resetSession');
+  if (newQ) newQ.addEventListener('click', renderQuestion);
+  if (reset) reset.addEventListener('click', () => { setNewSession(); renderQuestion(); showMsg('Nueva sesión iniciada.', 'ok'); });
+  renderQuestion();
+  flushQueue();
+});
+</script>
+</body>
+</html>
