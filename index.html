@@ -76,30 +76,41 @@ const QUESTION_POOL = [
   { id: 'q18', text: '¿Qué tan satisfecho(a) estás con la diferenciación de PCX frente a otras opciones en la ciudad?' }
 ];
 
-// === Utilidades seguras ===
-const $ = sel => document.querySelector(sel);
+// ===== Utilidades =====
+const $ = s => document.querySelector(s);
 
-// UUID con fallback (por si crypto no existe)
+// UUID seguro con fallback
 function uuid() {
   try {
-    if (window.crypto && crypto.getRandomValues) {
+    if (crypto?.getRandomValues) {
       return 'xxxxxxxxxxxx'.replace(/x/g, () =>
         (crypto.getRandomValues(new Uint8Array(1))[0] & 15).toString(16)
       );
     }
-  } catch (e) {}
-  // Fallback simple
+  } catch {}
   return 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
+// Sesión y bloqueo por sesión
 function getSessionId() {
   let s = localStorage.getItem('session_id');
   if (!s) { s = uuid(); localStorage.setItem('session_id', s); }
   return s;
 }
-function setNewSession() { localStorage.setItem('session_id', uuid()); }
+function setNewSession() {
+  localStorage.setItem('session_id', uuid());
+  localStorage.removeItem('answered'); // desbloquear para nuevo paciente
+}
 
-// Cola offline
+function isAnswered() {
+  return localStorage.getItem('answered') === '1';
+}
+function setAnswered(v) {
+  if (v) localStorage.setItem('answered', '1');
+  else localStorage.removeItem('answered');
+}
+
+// Cola offline (se mantiene igual)
 function getQueue() {
   try { return JSON.parse(localStorage.getItem('pending_submissions') || '[]'); }
   catch { return []; }
@@ -118,49 +129,39 @@ async function flushQueue() {
 }
 window.addEventListener('online', flushQueue);
 
-// Lógica de preguntas
-function pickRandomQuestion() {
-  if (!Array.isArray(QUESTION_POOL) || QUESTION_POOL.length === 0) {
-    throw new Error('QUESTION_POOL vacío o no definido');
-  }
-  const idx = Math.floor(Math.random() * QUESTION_POOL.length);
-  return QUESTION_POOL[idx];
-}
-
+// UI
 let currentQ = null;
 
 function renderQuestion() {
-  try {
-    currentQ = pickRandomQuestion();
-    const qEl = $('#question');
-    if (!qEl) throw new Error('No se encontró el elemento #question');
-
-    qEl.textContent = currentQ.text;
-
-    const scale = $('#scale');
-    if (!scale) throw new Error('No se encontró el elemento #scale');
-
-    scale.innerHTML = '';
-    for (let i = 1; i <= 5; i++) {
-      const btn = document.createElement('button');
-      btn.className = 'btn';
-      btn.type = 'button';
-      btn.textContent = i;
-      btn.setAttribute('aria-label', `Elegir ${i}`);
-      btn.addEventListener('click', () => submitRating(i));
-      scale.appendChild(btn);
-    }
-    showMsg(''); // limpia mensajes
-  } catch (e) {
-    console.error(e);
-    showMsg('Error al cargar la pregunta: ' + e.message, 'err');
+  // Si ya respondió en esta sesión, muestra pantalla de gracias y bloquea todo
+  if (isAnswered()) {
+    $('#question').textContent = '¡Gracias por tu respuesta!';
+    $('#scale').innerHTML = '';
+    $('#newQ')?.setAttribute('disabled', 'true');
+    showMsg('Toca "Nuevo paciente" para continuar.', 'ok');
+    return;
   }
+
+  // Si no ha respondido, muestra una pregunta aleatoria y botones
+  currentQ = QUESTION_POOL[Math.floor(Math.random() * QUESTION_POOL.length)];
+  $('#question').textContent = currentQ.text;
+
+  const scale = $('#scale');
+  scale.innerHTML = '';
+  for (let i = 1; i <= 5; i++) {
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.type = 'button';
+    btn.textContent = i;
+    btn.addEventListener('click', () => submitRating(i));
+    scale.appendChild(btn);
+  }
+  $('#newQ')?.setAttribute('disabled', 'true'); // ya no dejamos cambiar la pregunta
+  showMsg('');
 }
 
 function disableScale(disabled = true) {
-  const scale = $('#scale');
-  if (!scale) return;
-  scale.querySelectorAll('button').forEach(b => b.disabled = disabled);
+  $('#scale').querySelectorAll('button').forEach(b => b.disabled = disabled);
 }
 
 function showMsg(text, cls='ok') {
@@ -170,7 +171,7 @@ function showMsg(text, cls='ok') {
   el.textContent = text || '';
 }
 
-// Envío al Apps Script
+// Envío
 async function sendToGAS(data, silent = false) {
   try {
     const body = new URLSearchParams();
@@ -192,7 +193,9 @@ async function sendToGAS(data, silent = false) {
 }
 
 async function submitRating(rating) {
+  if (isAnswered()) return; // doble clic defensivo
   disableScale(true);
+
   const payload = {
     sessionId: getSessionId(),
     questionId: currentQ?.id || '',
@@ -201,24 +204,43 @@ async function submitRating(rating) {
     userAgent: navigator.userAgent || '',
     deviceTime: new Date().toISOString()
   };
+
   const ok = await sendToGAS(payload);
   if (!ok) {
     const q = getQueue();
     q.push(payload);
     setQueue(q);
   }
-  setTimeout(() => { renderQuestion(); disableScale(false); }, 1200);
+
+  // Bloquea definitivamente esta sesión
+  setAnswered(true);
+  $('#scale').innerHTML = '';
+  $('#question').textContent = '¡Gracias por tu respuesta!';
+  showMsg('Toca "Nuevo paciente" para continuar.', 'ok');
 }
 
-// Eventos UI (se registran al cargar el DOM)
+// Eventos
 document.addEventListener('DOMContentLoaded', () => {
+  // Deshabilitamos el botón "Otra pregunta"
   const newQ = document.getElementById('newQ');
+  if (newQ) {
+    newQ.textContent = 'Otra pregunta (deshabilitado)';
+    newQ.setAttribute('disabled', 'true');
+  }
+
   const reset = document.getElementById('resetSession');
-  if (newQ) newQ.addEventListener('click', renderQuestion);
-  if (reset) reset.addEventListener('click', () => { setNewSession(); renderQuestion(); showMsg('Nueva sesión iniciada.', 'ok'); });
+  if (reset) {
+    reset.addEventListener('click', () => {
+      setNewSession();
+      renderQuestion();
+      showMsg('Nueva sesión iniciada.', 'ok');
+    });
+  }
+
   renderQuestion();
   flushQueue();
 });
 </script>
 </body>
 </html>
+
